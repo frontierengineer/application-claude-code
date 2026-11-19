@@ -1,5 +1,5 @@
 {
-  "id": "github.com/frontierengineer/claude-code",
+  "id": "github.com/frontierengineer/application-claude-code",
   "title": "Claude Code",
   "color": "#d97757",
   "description": "Runs Claude Code as an agent on your workers, through its Agent Client Protocol adapter. Claude Code needs a Claude subscription or an Anthropic API key, signed in on each worker.",

@@ -40,7 +40,7 @@ export function harness(): Harness {
     logs.push({ level, message });
   };
   const context = {
-    applicationId: 'github.com/frontierengineer/claude-code',
+    applicationId: 'github.com/frontierengineer/application-claude-code',
     directories: { private: join(base, 'private'), scratch: join(base, 'scratch') },
     translate: (token: string) => translations.en?.[token] ?? token,
     logger: { debug: log('debug'), info: log('info'), warn: log('warn'), error: log('error') },
