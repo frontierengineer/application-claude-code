@@ -31,6 +31,7 @@
     "status.signin_alternative": "To use an API key instead, set `ANTHROPIC_API_KEY` in the environment the worker runs in, then restart the worker.",
     "status.copy": "Copy command",
     "status.copied": "Command copied.",
-    "status.check_again": "Check again"
+    "status.check_again": "Check again",
+    "status.more_models": "{count} more models"
   }
 }
