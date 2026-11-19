@@ -48,7 +48,7 @@ export async function signInState(machine: Machine): Promise<SignIn> {
   const legacy = await json(join(machine.env.CLAUDE_CONFIG_DIR ? directory : homeOf(machine), '.claude.json'));
   if (legacy && typeof legacy.primaryApiKey === 'string' && legacy.primaryApiKey !== '') return { state: 'signed_in', how: 'primaryApiKey' };
   if (machine.platform === 'darwin') {
-    const found = await run(machine, { command: '/usr/bin/security', args: [] }, ['find-generic-password', '-s', 'Claude Code-credentials']);
+    const found = await run(machine, { command: '/usr/bin/security', args: [] }, ['find-generic-password', '-s', 'Claude Code-credentials'], { timeoutMilliseconds: 5_000 });
     if (found.code === 0) return { state: 'signed_in', how: 'keychain' };
   }
   return { state: 'signed_out' };

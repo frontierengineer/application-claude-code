@@ -148,7 +148,7 @@ export function createClaudeRuntime(context: RuntimeContext, machine: Machine = 
     refreshing = (async () => {
       try {
         await writeScripts();
-        const ran = await run(machine, { command: machine.execPath, args: [modelsPath] }, [pathToFileURL(sdk).href, context.directories.scratch], { cwd: context.directories.scratch });
+        const ran = await run(machine, { command: machine.execPath, args: [modelsPath] }, [pathToFileURL(sdk).href, context.directories.scratch], { cwd: context.directories.scratch, timeoutMilliseconds: 90_000 });
         let parsed: { models?: ClaudeModelInfo[]; error?: string } = {};
         try {
           parsed = JSON.parse(ran.stdout) as typeof parsed;
