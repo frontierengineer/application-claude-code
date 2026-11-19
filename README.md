@@ -46,7 +46,8 @@ The launcher is a process `spawnAgent` started, so a session survives a reload
 of this Application as the interface promises.
 
 Every process the Runtime runs has a deadline, so a probe always answers: the
-macOS keychain check is given 5 seconds and the model listing 90.
+macOS keychain check it makes is given 5 seconds, and the model listing in the
+background 90.
 
 The surface bundle's **configuration view** shows Claude Code's state on every
 worker, its models, and how to sign in. It is plain HTML and `frontier-*`
