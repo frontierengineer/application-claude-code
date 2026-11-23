@@ -1,9 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { chmodSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import type { Failure, LaunchedAgent, RuntimeImplementation, RuntimeLaunchInput, RuntimeProbe } from '../../application';
 import { adapterVersion, createClaudeRuntime } from '../src/runtime.ts';
+import { signInState } from '../src/signin.ts';
 import { eventually, harness, request } from './harness.ts';
 
 function runtimeOf(h: ReturnType<typeof harness>): RuntimeImplementation {
@@ -80,16 +81,16 @@ test('a signed-in worker is ready and reports the models Claude Code lists, grou
   assert.equal(probeOf(await reloaded.probe()).models?.length, 3);
 });
 
-test('a failed install is reported with npm\'s words, waits before it is tried again, then is tried again', async () => {
+test('an install that cannot reach the registry says so, waits before it is tried again, then is tried again', async () => {
   const h = harness();
-  h.machine.env.FAKE_NPM_FAIL = '1';
+  h.machine.env.FAKE_NPM_FAIL = 'network';
   const runtime = runtimeOf(h);
   const failed = failureOf(await runtime.install());
   assert.equal(failed.retriable, true);
-  assert.equal(failed.message, 'Installing Claude Code did not finish: npm error code ENETUNREACH npm error network request to https://registry.npmjs.org failed.');
+  assert.equal(failed.message, "Installing Claude Code did not finish: this worker can't reach registry.npmjs.org (ENOTFOUND), so npm cannot download Claude Code. Check the worker's network connection, and its proxy if it needs one: npm reads HTTPS_PROXY and its own `proxy` setting.");
   const waiting = probeOf(await runtime.probe());
   assert.equal(waiting.missing, undefined);
-  assert.match(waiting.reason ?? '', /did not finish: .*ENETUNREACH.*It is tried again in 1 min\.$/);
+  assert.match(waiting.reason ?? '', /did not finish: this worker can't reach registry\.npmjs\.org .*It is tried again in 1 min\.$/);
   h.advance(61_000);
   assert.equal(probeOf(await runtime.probe()).missing, true);
   assert.equal(failureOf(await runtime.install()).retriable, true);
@@ -97,6 +98,29 @@ test('a failed install is reported with npm\'s words, waits before it is tried a
   delete h.machine.env.FAKE_NPM_FAIL;
   h.advance(5 * 60_000);
   assert.equal(await runtime.install(), undefined);
+});
+
+test("a registry of the person's own that is unreachable is named, a firewall's certificate is said, and any other failure keeps npm's words", async () => {
+  const h = harness();
+  const runtime = runtimeOf(h);
+  h.machine.env.FAKE_NPM_FAIL = 'mirror';
+  assert.match(failureOf(await runtime.install()).message, /^Installing Claude Code did not finish: this worker can't reach npm\.example\.internal \(ETIMEDOUT\)/);
+  h.advance(2 * 60 * 60_000);
+  h.machine.env.FAKE_NPM_FAIL = 'certificate';
+  assert.equal(failureOf(await runtime.install()).message, 'Installing Claude Code did not finish: this worker reaches registry.npmjs.org only through a certificate npm does not trust (SELF_SIGNED_CERT_IN_CHAIN), as a firewall that inspects traffic presents. Give npm that certificate with `npm config set cafile <file>` on the worker.');
+  h.advance(2 * 60 * 60_000);
+  h.machine.env.FAKE_NPM_FAIL = 'missing';
+  assert.equal(failureOf(await runtime.install()).message, 'Installing Claude Code did not finish: npm error code E404 npm error 404 Not Found - GET https://registry.npmjs.org/@agentclientprotocol%2fclaude-agent-acp - Not found.');
+});
+
+test("the npm beside the worker's Node is used before the PATH's, and the PATH's when there is none beside it", async () => {
+  const h = harness();
+  const runtime = runtimeOf(h);
+  assert.equal(await runtime.install(), undefined);
+  const elsewhere = harness();
+  rmSync(join(dirname(elsewhere.machine.execPath), 'npm'));
+  const fallback = runtimeOf(elsewhere);
+  assert.match(failureOf(await fallback.install()).message, /the PATH's npm was run/);
 });
 
 test('without npm the install says so', async () => {
@@ -122,19 +146,26 @@ test('the sign-in is read from a key, a refreshable login, an expired login and 
   assert.equal((await reason()).ready, true);
 });
 
-test('an adapter already on the PATH is used and nothing is installed', async () => {
-  const h = harness();
-  h.machine.env.ANTHROPIC_API_KEY = 'sk-test';
+function adapterOnPath(h: ReturnType<typeof harness>, version: string): string {
   const own = join(h.base, 'global', 'lib', 'node_modules', '@agentclientprotocol', 'claude-agent-acp');
   mkdirSync(join(own, 'dist'), { recursive: true });
-  writeFileSync(join(own, 'package.json'), JSON.stringify({ version: '9.9.9', type: 'module' }));
+  writeFileSync(join(own, 'package.json'), JSON.stringify({ version, type: 'module' }));
   writeFileSync(join(own, 'dist', 'index.js'), readFileSync(new URL('./fixtures/fake-adapter.mjs', import.meta.url)));
   chmodSync(join(own, 'dist', 'index.js'), 0o755);
   symlinkSync(join(own, 'dist', 'index.js'), join(h.fakeBin, 'claude-agent-acp'));
+  return own;
+}
+
+test('an adapter on the PATH at the minimum version or later is used, said in the log, and nothing is installed', async () => {
+  const h = harness();
+  h.machine.env.ANTHROPIC_API_KEY = 'sk-test';
+  const own = adapterOnPath(h, '0.109.2');
   const runtime = runtimeOf(h);
   const probe = probeOf(await runtime.probe());
   assert.equal(probe.ready, true);
   assert.equal(probe.missing, undefined);
+  await runtime.probe();
+  assert.deepEqual(h.logs.filter(({ level }) => level === 'info').map(({ message }) => message), [`Claude Code runs claude-agent-acp 0.109.2 from the PATH, at ${join(own, 'dist', 'index.js')}.`]);
   const launched = (await runtime.launch(launchInput(h.home))) as LaunchedAgent;
   const [, created] = await request(launched, [
     { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: 1, clientCapabilities: {} } },
@@ -144,6 +175,28 @@ test('an adapter already on the PATH is used and nothing is installed', async ()
   const launch = JSON.parse(h.spawned[0]?.environment?.FRONTIER_CLAUDE_LAUNCH ?? '{}') as { command: string; args: string[] };
   assert.deepEqual(launch.args, [join(own, 'dist', 'index.js')]);
   await launched.stop();
+});
+
+test('an adapter on the PATH older than the minimum, or of another major version, is passed over for the pinned one, and the log says which runs and why', async () => {
+  for (const [version, why] of [['0.90.0', 'older than 0.108.0'], ['1.0.0', 'a major version after 0.108.0']] as const) {
+    const h = harness();
+    h.machine.env.ANTHROPIC_API_KEY = 'sk-test';
+    const own = adapterOnPath(h, version);
+    const runtime = runtimeOf(h);
+    const missing = probeOf(await runtime.probe());
+    assert.equal(missing.missing, true);
+    assert.equal(await runtime.install(), undefined);
+    assert.equal(probeOf(await runtime.probe()).ready, true);
+    await runtime.probe();
+    const said = h.logs.filter(({ message }) => message.includes('claude-agent-acp')).map(({ message }) => message);
+    assert.equal(said.length, 2, said.join('\n'));
+    assert.match(said[0] ?? '', new RegExp(`^The claude-agent-acp on the PATH at ${join(own, 'dist', 'index.js')} is ${version.replaceAll('.', '\\.')}, ${why}`));
+    assert.match(said[1] ?? '', new RegExp(`^Claude Code runs claude-agent-acp ${adapterVersion.replaceAll('.', '\\.')}, installed by Frontier\\. The claude-agent-acp on the PATH`));
+    const launched = (await runtime.launch(launchInput(h.home))) as LaunchedAgent;
+    const launch = JSON.parse(h.spawned[0]?.environment?.FRONTIER_CLAUDE_LAUNCH ?? '{}') as { args: string[] };
+    assert.equal(launch.args[0], join(h.base, 'private', 'agent', 'node_modules', '@agentclientprotocol', 'claude-agent-acp', 'dist', 'index.js'));
+    await launched.stop();
+  }
 });
 
 test('launch starts the adapter through the launcher, applying the agent definition, model and effort at session start', async () => {
@@ -166,7 +219,7 @@ test('launch starts the adapter through the launcher, applying the agent definit
   const launched = await runtime.launch(launchInput(directory, { agentDefinition: definition, model: { modelId: 'opus', settings: { effort: 'high' } } }));
   assert.ok(launched && 'stream' in launched);
   const options = h.spawned[0]!;
-  assert.equal(options.command, process.execPath);
+  assert.equal(options.command, h.machine.execPath);
   assert.deepEqual(options.args, [join(h.base, 'private', 'bin', 'claude-launch.mjs')]);
   assert.equal(options.cwd, directory);
   assert.equal(options.environment?.ANTHROPIC_MODEL, 'opus');
@@ -235,4 +288,28 @@ test('launch is refused with the reason while Claude Code is missing or signed o
   assert.match(refused.message, /^Claude Code is not signed in on this worker\./);
   assert.equal(refused.retriable, true);
   assert.equal(h.spawned.length, 0);
+});
+
+function fakeSecurity(h: ReturnType<typeof harness>, script: string): { command: string; args: string[] } {
+  const path = join(h.base, 'security');
+  writeFileSync(path, `#!/bin/sh\n${script}\n`);
+  chmodSync(path, 0o755);
+  return { command: path, args: [] };
+}
+
+test('on a Mac a locked keychain is told apart from a signed-out one, and its reason says how to unlock it', async () => {
+  const h = harness();
+  const mac = { ...h.machine, platform: 'darwin' as const };
+  const locked = 'if [ "$1" = show-keychain-info ]; then echo "security: SecKeychainCopySettings: User interaction is not allowed." >&2; exit 36; fi; exit 0';
+  assert.deepEqual(await signInState(mac, fakeSecurity(h, locked)), { state: 'keychain_locked' });
+  const lockedAndHidden = 'if [ "$1" = find-generic-password ]; then exit 36; fi; exit 0';
+  assert.deepEqual(await signInState(mac, fakeSecurity(h, lockedAndHidden)), { state: 'keychain_locked' });
+  const unlockedSignedIn = 'exit 0';
+  assert.deepEqual(await signInState(mac, fakeSecurity(h, unlockedSignedIn)), { state: 'signed_in', how: 'keychain' });
+  const unlockedSignedOut = 'if [ "$1" = find-generic-password ]; then echo "security: SecKeychainSearchCopyNext: The specified item could not be found in the keychain." >&2; exit 44; fi; exit 0';
+  assert.deepEqual(await signInState(mac, fakeSecurity(h, unlockedSignedOut)), { state: 'signed_out' });
+  mac.env = { ...mac.env, ANTHROPIC_API_KEY: 'sk-test' };
+  assert.deepEqual(await signInState(mac, fakeSecurity(h, locked)), { state: 'signed_in', how: 'ANTHROPIC_API_KEY' });
+  const translations = JSON.parse(readFileSync(new URL('../translations.json', import.meta.url), 'utf8')) as { en: Record<string, string> };
+  assert.match(translations.en['probe.keychain_locked'] ?? '', /security unlock-keychain ~\/Library\/Keychains\/login\.keychain-db/);
 });

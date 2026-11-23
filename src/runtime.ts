@@ -14,15 +14,19 @@ import type {
   Unavailable,
 } from '../../application';
 import { agentName, isEmptyDefinition, parseAgentDefinition } from './definition.ts';
-import { Installer, npmInstall } from './installer.ts';
+import { type InstallOutcome, Installer, npmInstall } from './installer.ts';
 import { type Command, type Machine, firstExecutable, nodeAware, realMachine, run, which } from './machine.ts';
 import { type ClaudeModelInfo, toRuntimeModels } from './models.ts';
 import { launcherScript, modelsScript } from './scripts.ts';
 import { signInState } from './signin.ts';
 import { failure, text } from './text.ts';
+import { judgeVersion } from './version.ts';
 
 export const adapterPackage = '@agentclientprotocol/claude-agent-acp';
 export const adapterVersion = '0.108.0';
+// An adapter on the PATH older than this, or of another major version, is
+// passed over for the one installed at adapterVersion.
+export const adapterMinimum = '0.108.0';
 
 const refreshAfterMilliseconds = 12 * 60 * 60 * 1000;
 const retryRefreshAfterMilliseconds = 10 * 60 * 1000;
@@ -91,11 +95,32 @@ export function createClaudeRuntime(context: RuntimeContext, machine: Machine = 
     return { command, entry, version: pkg && typeof pkg.version === 'string' ? pkg.version : null };
   }
 
+  let said = '';
+  function say(key: string, message: string, fields: Record<string, string>): void {
+    if (key === said) return;
+    said = key;
+    void context.logger.info(message, fields);
+  }
+
   async function locateAdapter(): Promise<Adapter | null> {
     const fromPath = await pathAdapter();
-    if (fromPath) return fromPath;
+    let passedOver = '';
+    if (fromPath) {
+      const verdict = judgeVersion(fromPath.version, adapterMinimum);
+      if (verdict.usable) {
+        say(`path ${fromPath.entry} ${fromPath.version}`, t('log.adapter_path', { version: fromPath.version ?? '', path: fromPath.entry }), { path: fromPath.entry, version: fromPath.version ?? '' });
+        return fromPath;
+      }
+      const values = { version: fromPath.version ?? '', path: fromPath.entry, minimum: adapterMinimum };
+      passedOver = verdict.why === 'older' ? t('log.adapter_passed_over_older', values)
+        : verdict.why === 'newer_major' ? t('log.adapter_passed_over_newer_major', values)
+          : t('log.adapter_passed_over_unknown', values);
+    }
     const installed = await privateAdapter();
-    return installed && installed.version === adapterVersion ? installed : null;
+    const usable = installed && installed.version === adapterVersion ? installed : null;
+    if (usable) say(`private ${usable.entry} ${passedOver}`, [t('log.adapter_private', { version: adapterVersion }), passedOver].filter(Boolean).join(' '), { path: usable.entry, version: adapterVersion });
+    else if (passedOver) say(`none ${passedOver}`, passedOver, { path: fromPath?.entry ?? '' });
+    return usable;
   }
 
   function sdkOf(adapter: Adapter): string | null {
@@ -193,6 +218,7 @@ export function createClaudeRuntime(context: RuntimeContext, machine: Machine = 
       const answer: RuntimeProbe = { ready: signIn.state === 'signed_in' };
       if (signIn.state === 'signed_out') answer.reason = t('probe.signed_out', { command: await signInCommand(adapter) });
       if (signIn.state === 'expired') answer.reason = t('probe.expired', { command: await signInCommand(adapter) });
+      if (signIn.state === 'keychain_locked') answer.reason = t('probe.keychain_locked');
       if (models.length > 0) answer.models = models;
       return answer;
     } catch (error) {
@@ -200,11 +226,17 @@ export function createClaudeRuntime(context: RuntimeContext, machine: Machine = 
     }
   }
 
+  function installReason(outcome: Extract<InstallOutcome, { ok: false }>): string {
+    if (!outcome.unreached) return outcome.reason;
+    const { host, code, certificate } = outcome.unreached;
+    return t(certificate ? 'install.untrusted_certificate' : 'install.unreachable', { host, code });
+  }
+
   async function install(): Promise<void | Failure | Unavailable> {
     const outcome = await installer.run(async () => {
       await mkdir(prefix, { recursive: true });
       const installed = await npmInstall(machine, prefix, `${adapterPackage}@${adapterVersion}`);
-      if (!installed.ok) return installed;
+      if (!installed.ok) return { ok: false, reason: installReason(installed) };
       const adapter = await privateAdapter();
       if (!adapter || adapter.version !== adapterVersion) return { ok: false, reason: t('install.not_found_after') };
       return { ok: true };
@@ -222,6 +254,7 @@ export function createClaudeRuntime(context: RuntimeContext, machine: Machine = 
     const signIn = await signInState(machine);
     if (signIn.state === 'signed_out') return failure(t('probe.signed_out', { command: await signInCommand(adapter) }), true);
     if (signIn.state === 'expired') return failure(t('probe.expired', { command: await signInCommand(adapter) }), true);
+    if (signIn.state === 'keychain_locked') return failure(t('probe.keychain_locked'), true);
     await writeScripts();
     const definition = parseAgentDefinition(input.agentDefinition);
     const options: Record<string, unknown> = {};

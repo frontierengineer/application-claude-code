@@ -4,8 +4,14 @@ import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const args = process.argv.slice(2);
+const failures = {
+  network: 'npm error code ENOTFOUND\nnpm error syscall getaddrinfo\nnpm error errno ENOTFOUND\nnpm error network request to https://registry.npmjs.org/@agentclientprotocol%2fclaude-agent-acp failed, reason: getaddrinfo ENOTFOUND registry.npmjs.org\nnpm error network This is a problem related to network connectivity.\n',
+  certificate: 'npm error code SELF_SIGNED_CERT_IN_CHAIN\nnpm error errno SELF_SIGNED_CERT_IN_CHAIN\nnpm error request to https://registry.npmjs.org/@agentclientprotocol%2fclaude-agent-acp failed, reason: self-signed certificate in certificate chain\n',
+  mirror: 'npm error code ETIMEDOUT\nnpm error network request to https://npm.example.internal/@agentclientprotocol%2fclaude-agent-acp failed, reason: connect ETIMEDOUT 10.0.0.9:443\n',
+  missing: 'npm error code E404\nnpm error 404 Not Found - GET https://registry.npmjs.org/@agentclientprotocol%2fclaude-agent-acp - Not found\n',
+};
 if (process.env.FAKE_NPM_FAIL) {
-  process.stderr.write('npm error code ENETUNREACH\nnpm error network request to https://registry.npmjs.org failed\n');
+  process.stderr.write(failures[process.env.FAKE_NPM_FAIL] ?? failures.network);
   process.exit(1);
 }
 const prefix = args[args.indexOf('--prefix') + 1];

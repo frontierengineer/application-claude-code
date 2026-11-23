@@ -20,12 +20,20 @@ On every worker, the worker bundle:
   models it offers. The sign-in is read from `ANTHROPIC_API_KEY`,
   `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_AUTH_TOKEN`, a cloud provider switch, an
   `apiKeyHelper`, the login Claude Code keeps in `~/.claude`, or the macOS
-  keychain. A login that can refresh itself counts as signed in.
+  keychain. A login that can refresh itself counts as signed in. A locked macOS
+  keychain, as on a Mac no one has logged in to since it restarted, is said as
+  locked, with the command that unlocks it.
 - **Installs** the Claude Code ACP adapter,
   `@agentclientprotocol/claude-agent-acp`, at the version this Application pins,
-  into its own directory on the worker with npm. An adapter already on the PATH
-  is used instead. npm is given 10 minutes; a failed or stalled install is tried
-  again after 1, 4, 16, then every 60 minutes, and its reason shows meanwhile.
+  into its own directory on the worker with npm: the npm beside the Node that
+  runs the worker, which a Frontier build carries, else the PATH's. An adapter
+  already on the PATH is used instead when it is at least the minimum version
+  (`adapterMinimum` in `src/runtime.ts`) and of the same major version; the log
+  says which adapter runs, and why one on the PATH was passed over. npm is
+  given 10 minutes; a failed or stalled install is tried again after 1, 4, 16,
+  then every 60 minutes, and its reason shows meanwhile. A registry the worker
+  cannot reach is named as unreachable, and a firewall's certificate npm does
+  not trust is said as such.
 - **Lists models** by asking the Claude Agent SDK which models it supports, in
   the background, and keeps them for 12 hours. Each model is grouped by family,
   with the effort levels it supports as a setting.
@@ -46,7 +54,7 @@ The launcher is a process `spawnAgent` started, so a session survives a reload
 of this Application as the interface promises.
 
 Every process the Runtime runs has a deadline, so a probe always answers: the
-macOS keychain check it makes is given 5 seconds, and the model listing in the
+macOS keychain checks it makes are given 5 seconds each, and the model listing in the
 background 90.
 
 The surface bundle's **configuration view** shows Claude Code's state on every
@@ -63,7 +71,7 @@ elements, drawn by Frontier's Design System in the person's own appearance.
 | `src/models.ts` | Turning Claude Code's models into the interface's models. |
 | `src/definition.ts` | Reading an agent definition's front matter. |
 | `src/scripts.ts` | The launcher and the model listing script written to the worker. |
-| `src/installer.ts`, `src/machine.ts` | Finding npm, running installs once at a time, and running processes with a deadline. |
+| `src/installer.ts`, `src/machine.ts`, `src/version.ts` | Finding npm, running installs once at a time and naming a registry that cannot be reached, running processes with a deadline, and judging a version found on the PATH. |
 | `surface.ts`, `src/status-view.ts` | The configuration view. |
 | `translations.json` | Every message a person reads, by token. |
 | `test/` | Unit tests, with a fake npm, a fake adapter speaking ACP and a fake SDK, and a browser test of the configuration view. |
